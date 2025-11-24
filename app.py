@@ -16,7 +16,6 @@ lookback_years = st.sidebar.slider("Lookback Period (Years)", 1, 10, 2)
 start_date = (datetime.now() - timedelta(days=lookback_years*365)).strftime('%Y-%m-%d')
 
 # --- DATA DEFINITIONS ---
-# We use market tickers as proxies for macro events because they are live and free.
 tickers = {
     "S&P 500 (Growth Proxy)": "^GSPC",
     "10-Year Treasury Yield (Rates)": "^TNX",
@@ -31,10 +30,22 @@ tickers = {
 def get_data(ticker_dict, start):
     data = {}
     for name, symbol in ticker_dict.items():
-        df = yf.download(symbol, start=start, progress=False)
+        # Updated to handle recent yfinance changes
+        try:
+            df = yf.download(symbol, start=start, progress=False, auto_adjust=False, multi_level_index=False)
+        except TypeError:
+            # Fallback for older versions of yfinance
+            df = yf.download(symbol, start=start, progress=False)
+            
+        # Ensure the columns are flat and easy to read
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+
         # Normalize: Calculate % change from start of period for comparison
-        df['Pct_Change'] = ((df['Close'] - df['Close'].iloc[0]) / df['Close'].iloc[0]) * 100
-        data[name] = df
+        if not df.empty:
+            first_close = float(df['Close'].iloc[0])
+            df['Pct_Change'] = ((df['Close'] - first_close) / first_close) * 100
+            data[name] = df
     return data
 
 # Fetch data
@@ -50,22 +61,23 @@ cols = st.columns(len(tickers))
 
 for i, (name, df) in enumerate(macro_data.items()):
     if not df.empty:
-        current_price = df['Close'].iloc[-1]
-        prev_price = df['Close'].iloc[-2]
-        delta = current_price - prev_price
-        
-        # Color logic: Green is generally good, but for VIX/Yields, red/green depends on context.
-        # Here we just use standard financial coloring (Green = Up, Red = Down).
-        cols[i].metric(
-            label=name,
-            value=f"{current_price:.2f}",
-            delta=f"{delta:.2f}"
-        )
+        # FIX: Explicitly convert to float to prevent formatting errors
+        try:
+            current_price = float(df['Close'].iloc[-1])
+            prev_price = float(df['Close'].iloc[-2])
+            delta = current_price - prev_price
+            
+            cols[i].metric(
+                label=name,
+                value=f"{current_price:.2f}",
+                delta=f"{delta:.2f}"
+            )
+        except Exception as e:
+            cols[i].write("N/A")
 
 # --- MAIN CHARTS AREA ---
 st.divider()
 
-# Create two columns for layout
 col1, col2 = st.columns([2, 1])
 
 with col1:
@@ -79,8 +91,9 @@ with col1:
     if selected_metrics:
         fig = go.Figure()
         for metric in selected_metrics:
-            df = macro_data[metric]
-            fig.add_trace(go.Scatter(x=df.index, y=df['Pct_Change'], mode='lines', name=metric))
+            if metric in macro_data:
+                df = macro_data[metric]
+                fig.add_trace(go.Scatter(x=df.index, y=df['Pct_Change'], mode='lines', name=metric))
         
         fig.update_layout(
             title=f"Relative Performance ({lookback_years} Year Lookback)",
@@ -95,11 +108,7 @@ with col2:
     st.subheader("Yield Curve Proxy")
     st.info("Tracking the 'Price of Money'")
     
-    # Fetching 2Y vs 10Y specifically for this chart
-    try:
-        # Note: Yahoo finance symbols for yields can be tricky, using TNX (10y) and IRX (13 week) as proxies 
-        # or ZT=F for 2 year futures if available. 
-        # For simplicity in this free version, we will plot 10Y Yield trend individually.
+    if "10-Year Treasury Yield (Rates)" in macro_data:
         tnx = macro_data["10-Year Treasury Yield (Rates)"]
         
         fig_yield = go.Figure()
@@ -120,7 +129,7 @@ with col2:
         **Why this matters:**
         Rising yields often hurt growth stocks and increase borrowing costs for companies.
         """)
-    except:
+    else:
         st.write("Yield data currently unavailable.")
 
 # --- ECONOMIC CONTEXT ---
